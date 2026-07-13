@@ -17,10 +17,10 @@
     "youtube.com", "youtu.be", "music.youtube.com"
   ],
 
+  "_block_apps_info": "Dopasowanie po FRAGMENCIE nazwy procesu (bez wielkosci liter). 'whatsapp' zlapie tez WhatsApp.Root.exe. Signal jest celowo pominiety.",
   "block_apps": [
-    "discord.exe", "messenger.exe", "instagram.exe", "tiktok.exe",
-    "facebook.exe", "slack.exe",
-    "telegram.exe", "whatsapp.exe"
+    "telegram", "whatsapp", "discord", "messenger",
+    "instagram", "tiktok", "facebook", "slack", "snapchat"
   ],
 
   "block_keywords": []

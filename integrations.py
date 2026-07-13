@@ -63,6 +63,13 @@ def mistral_chat(prompt, system=None, model=None, max_tokens=900, timeout=90):
     return d["choices"][0]["message"]["content"].strip()
 
 
+def mistral_dev(prompt, system=None, max_tokens=1200, timeout=120):
+    """Generowanie przez model dev (kod / zadania w aplikacji)."""
+    return mistral_chat(prompt, system=system,
+                        model=ENV.get("MISTRAL_MODEL_DEV", "devstral-medium-latest"),
+                        max_tokens=max_tokens, timeout=timeout)
+
+
 # ---------------------------------------------------------------------------
 # Telegram
 # ---------------------------------------------------------------------------

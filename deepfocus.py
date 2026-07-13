@@ -301,16 +301,25 @@ def idle_seconds():
 
 
 def kill_blocked_apps(block_apps):
-    """Zabija procesy zablokowanych aplikacji (Telegram, WhatsApp...). Zwraca liste nazw."""
+    """Zabija procesy zablokowanych aplikacji (Telegram, WhatsApp, Discord...).
+    Dopasowanie po FRAGMENCIE nazwy (np. 'whatsapp' lapie WhatsApp.Root.exe).
+    Zwraca liste zabitych nazw. Signal (dozwolony) nie jest na liscie."""
     killed = []
     if not block_apps:
         return killed
-    for p in psutil.process_iter(["name"]):
+    stems = [s.lower().replace(".exe", "") for s in block_apps]
+    for p in psutil.process_iter(["name", "pid"]):
         try:
             name = (p.info["name"] or "").lower()
-            if name in block_apps:
+            if not name or not any(stem in name for stem in stems):
+                continue
+            pid = p.info["pid"]
+            try:
                 p.kill()
-                killed.append(name)
+            except (psutil.AccessDenied, psutil.NoSuchProcess):
+                # aplikacje ze Store czasem wymagaja twardego taskkill z drzewem procesow
+                os.system(f'taskkill /F /T /PID {pid} >nul 2>&1')
+            killed.append(p.info["name"])
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
         except Exception:
