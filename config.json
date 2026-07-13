@@ -1,0 +1,27 @@
+{
+  "_info": "Deep Focus Now - ustawienia. W trybie PRACA blokowane sa social media ORAZ komunikatory (Telegram, WhatsApp) - strony i aplikacje. Dozwolone zawsze: Signal i YouTube.",
+  "work_minutes": 45,
+  "break_minutes": 15,
+
+  "block_domains": [
+    "linkedin.com", "x.com", "twitter.com", "facebook.com", "fb.com",
+    "instagram.com", "tiktok.com", "snapchat.com", "reddit.com", "redd.it",
+    "pinterest.com", "tumblr.com", "threads.net", "mastodon.social",
+    "9gag.com", "twitch.tv", "kwai.com", "vk.com", "wykop.pl",
+    "quora.com", "discord.com", "messenger.com",
+    "whatsapp.com", "web.whatsapp.com", "telegram.org", "web.telegram.org", "t.me"
+  ],
+
+  "allow_domains": [
+    "signal.org",
+    "youtube.com", "youtu.be", "music.youtube.com"
+  ],
+
+  "block_apps": [
+    "discord.exe", "messenger.exe", "instagram.exe", "tiktok.exe",
+    "facebook.exe", "slack.exe",
+    "telegram.exe", "whatsapp.exe"
+  ],
+
+  "block_keywords": []
+}

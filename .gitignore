@@ -1,0 +1,22 @@
+# Sekrety i dane lokalne — NIE wrzucac na GitHub
+.env
+telegram_chat.json
+
+# Baza i eksporty z realnej pracy
+deepfocus.db
+deepfocus.db-journal
+history.json
+sessions.json
+
+# Logi
+deepfocus_log.txt
+@AutomationLog.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# System
+Thumbs.db
+desktop.ini
