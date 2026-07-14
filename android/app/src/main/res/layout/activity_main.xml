@@ -22,7 +22,7 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:text="Podaj IP kompa (widoczne w logu apki na kompie) i ta sama siec WiFi."
+            android:text="Auto-laczenie: gdy komp jest w tej samej sieci WiFi, telefon sam go znajdzie. IP mozesz wpisac recznie tylko jesli auto nie zadziala."
             android:textColor="#8aa0b3"
             android:textSize="13sp"
             android:paddingBottom="16dp" />

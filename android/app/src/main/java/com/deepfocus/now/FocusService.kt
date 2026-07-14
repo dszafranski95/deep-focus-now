@@ -6,11 +6,16 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.HttpURLConnection
+import java.net.InetSocketAddress
+import java.net.SocketTimeoutException
 import java.net.URL
 
 /**
@@ -22,6 +27,7 @@ class FocusService : Service() {
     private val channelId = "deepfocus"
     @Volatile private var running = false
     private var thread: Thread? = null
+    private var discThread: Thread? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -33,6 +39,7 @@ class FocusService : Service() {
         if (!running) {
             running = true
             thread = Thread { loop() }.also { it.start() }
+            discThread = Thread { discoveryLoop() }.also { it.start() }
         }
         return START_STICKY
     }
@@ -40,7 +47,49 @@ class FocusService : Service() {
     override fun onDestroy() {
         running = false
         thread?.interrupt()
+        discThread?.interrupt()
         super.onDestroy()
+    }
+
+    /** Nasluchuje rozglaszania kompa (UDP 8771) i sam zapisuje jego IP/port. */
+    private fun discoveryLoop() {
+        var lock: WifiManager.MulticastLock? = null
+        var sock: DatagramSocket? = null
+        try {
+            val wifi = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            lock = wifi.createMulticastLock("deepfocus").apply {
+                setReferenceCounted(false); acquire()
+            }
+            sock = DatagramSocket(null).apply {
+                reuseAddress = true
+                broadcast = true
+                soTimeout = 4000
+                bind(InetSocketAddress(8771))
+            }
+            val buf = ByteArray(2048)
+            while (running) {
+                try {
+                    val pkt = DatagramPacket(buf, buf.size)
+                    sock.receive(pkt)
+                    val j = JSONObject(String(pkt.data, 0, pkt.length))
+                    if (j.optString("app") == "deep-focus-now") {
+                        val ip = j.optString("ip")
+                        val port = j.optInt("port", 8770)
+                        if (ip.isNotBlank()) {
+                            getSharedPreferences("cfg", Context.MODE_PRIVATE).edit()
+                                .putString("host", ip).putInt("port", port).apply()
+                        }
+                    }
+                } catch (_: SocketTimeoutException) {
+                    // brak rozglaszania w tym oknie - probuj dalej
+                } catch (_: Exception) {
+                }
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { sock?.close() } catch (_: Exception) {}
+            try { lock?.release() } catch (_: Exception) {}
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

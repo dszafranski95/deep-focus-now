@@ -93,7 +93,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun statusText(): String {
-        if (!FocusState.connected) return "● Brak polaczenia z kompem\nSprawdz IP i te sama siec WiFi."
+        if (!FocusState.connected) return "● Szukam kompa w sieci WiFi...\n(komp musi miec wlaczona apke Deep Focus)"
         if (!FocusState.dayActive) return "● Polaczono. Dzien nieaktywny na kompie."
         return if (FocusState.focus)
             "🎯 DEEP FOCUS — PRACA\n${mmss(FocusState.remaining)} do przerwy\nSociale zablokowane."

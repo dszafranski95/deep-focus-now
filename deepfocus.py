@@ -75,6 +75,7 @@ ADDRESS_BAR_NAMES = [
 MODE_WORK = "WORK"
 MODE_BREAK = "BREAK"
 LAN_PORT = 8770          # port serwera stanu dla telefonu (ta sama siec WiFi)
+DISCOVERY_PORT = 8771    # port rozglaszania (telefon sam znajduje komp)
 
 
 def local_ip():
@@ -421,6 +422,32 @@ def start_status_server(app, port=LAN_PORT):
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log(f"Serwer stanu LAN: http://{local_ip()}:{port}/status")
     return srv
+
+
+def start_discovery_broadcaster(port=LAN_PORT, disc_port=DISCOVERY_PORT):
+    """Rozglasza IP kompa w sieci (UDP broadcast), zeby telefon sam go znalazl."""
+    def loop():
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        while True:
+            try:
+                ip = local_ip()
+                msg = json.dumps({"app": "deep-focus-now", "ip": ip,
+                                  "port": port}).encode("utf-8")
+                targets = ["255.255.255.255"]
+                parts = ip.split(".")
+                if len(parts) == 4:
+                    targets.append(".".join(parts[:3]) + ".255")   # rozgloszenie podsieci WiFi
+                for t in targets:
+                    try:
+                        s.sendto(msg, (t, disc_port))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            time.sleep(3)
+    threading.Thread(target=loop, daemon=True).start()
+    log(f"Rozglaszanie w sieci: UDP broadcast :{disc_port} (auto-wykrywanie telefonu)")
 
 
 # ---------------------------------------------------------------------------
@@ -1040,6 +1067,7 @@ class DeepFocusApp:
 
     def run(self):
         self.status_srv = start_status_server(self)
+        start_discovery_broadcaster()
         threading.Thread(target=monitor_loop, args=(self,), daemon=True).start()
         self.root.after(1000, self.tick)
         self.root.after(200, self.pump)
