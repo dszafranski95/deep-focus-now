@@ -18,12 +18,10 @@ import json
 import time
 import queue
 import ctypes
-import socket
 import sqlite3
 import threading
 import datetime
 from urllib.parse import urlparse
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import psutil
 import tkinter as tk
@@ -74,19 +72,6 @@ ADDRESS_BAR_NAMES = [
 
 MODE_WORK = "WORK"
 MODE_BREAK = "BREAK"
-LAN_PORT = 8770          # port serwera stanu dla telefonu (ta sama siec WiFi)
-DISCOVERY_PORT = 8771    # port rozglaszania (telefon sam znajduje komp)
-
-
-def local_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "127.0.0.1"
 
 
 def log(msg):
@@ -382,75 +367,6 @@ def monitor_loop(app):
 
 
 # ---------------------------------------------------------------------------
-# Serwer stanu w sieci LAN (dla aplikacji na telefonie)
-# ---------------------------------------------------------------------------
-class _StatusHandler(BaseHTTPRequestHandler):
-    app = None
-
-    def log_message(self, *a):
-        pass
-
-    def do_GET(self):
-        if self.path.startswith("/status"):
-            try:
-                self.app.last_phone_poll = time.time()
-                self.app.phone_ip = self.client_address[0]
-            except Exception:
-                pass
-            try:
-                data = json.dumps(self.app.status_dict()).encode("utf-8")
-            except Exception:
-                data = b"{}"
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-
-def start_status_server(app, port=LAN_PORT):
-    _StatusHandler.app = app
-    try:
-        srv = ThreadingHTTPServer(("0.0.0.0", port), _StatusHandler)
-    except OSError as e:
-        log(f"Serwer LAN nie wystartowal ({e})")
-        return None
-    threading.Thread(target=srv.serve_forever, daemon=True).start()
-    log(f"Serwer stanu LAN: http://{local_ip()}:{port}/status")
-    return srv
-
-
-def start_discovery_broadcaster(port=LAN_PORT, disc_port=DISCOVERY_PORT):
-    """Rozglasza IP kompa w sieci (UDP broadcast), zeby telefon sam go znalazl."""
-    def loop():
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        while True:
-            try:
-                ip = local_ip()
-                msg = json.dumps({"app": "deep-focus-now", "ip": ip,
-                                  "port": port}).encode("utf-8")
-                targets = ["255.255.255.255"]
-                parts = ip.split(".")
-                if len(parts) == 4:
-                    targets.append(".".join(parts[:3]) + ".255")   # rozgloszenie podsieci WiFi
-                for t in targets:
-                    try:
-                        s.sendto(msg, (t, disc_port))
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            time.sleep(3)
-    threading.Thread(target=loop, daemon=True).start()
-    log(f"Rozglaszanie w sieci: UDP broadcast :{disc_port} (auto-wykrywanie telefonu)")
-
-
-# ---------------------------------------------------------------------------
 # Aplikacja
 # ---------------------------------------------------------------------------
 class DeepFocusApp:
@@ -475,9 +391,6 @@ class DeepFocusApp:
         self.stop_ev = threading.Event()
         self.event_q = queue.Queue()
         self.block_overlay = None
-        self.last_phone_poll = 0.0    # kiedy telefon ostatnio pytal o stan
-        self.phone_ip = ""
-        self.pc_ip = local_ip()       # IP kompa do wpisania w telefonie
 
         f, s, b = self.db.get_day(today_key())
         self.focus_seconds, self.social_seconds, self.blocks = f, s, b
@@ -524,7 +437,7 @@ class DeepFocusApp:
             self.root.attributes("-alpha", 0.97)
         except Exception:
             pass
-        self.BW, self.BH = 340, 300           # bazowy rozmiar
+        self.BW, self.BH = 340, 270           # bazowy rozmiar
         self.W, self.H = self.BW, self.BH
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"{self.W}x{self.H}+{sw - self.W - 24}+30")
@@ -561,10 +474,6 @@ class DeepFocusApp:
         self.focus_lbl.grid(row=0, column=0, padx=10)
         self.social_lbl = tk.Label(stats, text="Sociale: 0 min", bg=CARD, fg=BREAK_C, font=self.f_stat)
         self.social_lbl.grid(row=0, column=1, padx=10)
-
-        self.phone_lbl = tk.Label(self.card, text="", bg=CARD, fg=SUB,
-                                  font=("Segoe UI", 9), justify="center")
-        self.phone_lbl.pack(pady=(6, 0))
 
         self.btns = tk.Frame(self.card, bg=CARD)
         self.btns.pack(pady=(10, 4))
@@ -830,17 +739,7 @@ class DeepFocusApp:
             if self.tick_count % 5 == 0:
                 self._persist()
         self._refresh_labels()
-        self._refresh_phone()
         self.root.after(1000, self.tick)
-
-    def _refresh_phone(self):
-        connected = (time.time() - self.last_phone_poll) < 15
-        if connected:
-            self.phone_lbl.config(
-                text=f"📱 Telefon: POŁĄCZONY  ●  ({self.phone_ip})", fg=WORK_C)
-        else:
-            self.phone_lbl.config(
-                text=f"📱 Telefon: brak  ○  wpisz w apce:  {self.pc_ip}:{LAN_PORT}", fg=SUB)
 
     def _handle_idle(self):
         idle = idle_seconds()
@@ -1050,24 +949,7 @@ class DeepFocusApp:
         except Exception:
             pass
 
-    def status_dict(self):
-        active = self.day_active and not self.day_ended
-        focus_mode = bool(active and not self.paused and self.mode == MODE_WORK)
-        return {
-            "app": "deep-focus-now", "version": 1,
-            "day_active": bool(active), "day_ended": bool(self.day_ended),
-            "paused": bool(self.paused), "mode": self.mode,
-            "focus": focus_mode,                # czy telefon ma blokowac
-            "remaining": int(self.remaining),
-            "work_min": self.cfg.work_min, "break_min": self.cfg.break_min,
-            "focus_seconds": int(self.focus_seconds),
-            "social_seconds": int(self.social_seconds),
-            "date": today_key(), "ts": time.time(),
-        }
-
     def run(self):
-        self.status_srv = start_status_server(self)
-        start_discovery_broadcaster()
         threading.Thread(target=monitor_loop, args=(self,), daemon=True).start()
         self.root.after(1000, self.tick)
         self.root.after(200, self.pump)
