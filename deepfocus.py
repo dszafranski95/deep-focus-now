@@ -18,10 +18,12 @@ import json
 import time
 import queue
 import ctypes
+import socket
 import sqlite3
 import threading
 import datetime
 from urllib.parse import urlparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import psutil
 import tkinter as tk
@@ -72,6 +74,18 @@ ADDRESS_BAR_NAMES = [
 
 MODE_WORK = "WORK"
 MODE_BREAK = "BREAK"
+LAN_PORT = 8770          # port serwera stanu dla telefonu (ta sama siec WiFi)
+
+
+def local_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
 
 
 def log(msg):
@@ -364,6 +378,44 @@ def monitor_loop(app):
             body()
     else:
         body()
+
+
+# ---------------------------------------------------------------------------
+# Serwer stanu w sieci LAN (dla aplikacji na telefonie)
+# ---------------------------------------------------------------------------
+class _StatusHandler(BaseHTTPRequestHandler):
+    app = None
+
+    def log_message(self, *a):
+        pass
+
+    def do_GET(self):
+        if self.path.startswith("/status"):
+            try:
+                data = json.dumps(self.app.status_dict()).encode("utf-8")
+            except Exception:
+                data = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+
+def start_status_server(app, port=LAN_PORT):
+    _StatusHandler.app = app
+    try:
+        srv = ThreadingHTTPServer(("0.0.0.0", port), _StatusHandler)
+    except OSError as e:
+        log(f"Serwer LAN nie wystartowal ({e})")
+        return None
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    log(f"Serwer stanu LAN: http://{local_ip()}:{port}/status")
+    return srv
 
 
 # ---------------------------------------------------------------------------
@@ -949,7 +1001,23 @@ class DeepFocusApp:
         except Exception:
             pass
 
+    def status_dict(self):
+        active = self.day_active and not self.day_ended
+        focus_mode = bool(active and not self.paused and self.mode == MODE_WORK)
+        return {
+            "app": "deep-focus-now", "version": 1,
+            "day_active": bool(active), "day_ended": bool(self.day_ended),
+            "paused": bool(self.paused), "mode": self.mode,
+            "focus": focus_mode,                # czy telefon ma blokowac
+            "remaining": int(self.remaining),
+            "work_min": self.cfg.work_min, "break_min": self.cfg.break_min,
+            "focus_seconds": int(self.focus_seconds),
+            "social_seconds": int(self.social_seconds),
+            "date": today_key(), "ts": time.time(),
+        }
+
     def run(self):
+        self.status_srv = start_status_server(self)
         threading.Thread(target=monitor_loop, args=(self,), daemon=True).start()
         self.root.after(1000, self.tick)
         self.root.after(200, self.pump)

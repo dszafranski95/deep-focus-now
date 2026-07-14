@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Deep Focus Now</string>
+    <string name="accessibility_desc">Gdy na kompie trwa Deep Focus (praca), ta usluga wyrzuca Cie z zablokowanych aplikacji (Instagram, TikTok, WhatsApp, Telegram itd.), aby pomoc Ci sie skupic.</string>
+</resources>

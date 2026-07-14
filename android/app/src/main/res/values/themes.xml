@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.DeepFocus" parent="Theme.AppCompat.DayNight.NoActionBar">
+        <item name="colorPrimary">#5ad1a0</item>
+        <item name="colorAccent">#5ad1a0</item>
+        <item name="android:windowBackground">#0e1319</item>
+    </style>
+</resources>
