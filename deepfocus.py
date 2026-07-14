@@ -392,6 +392,11 @@ class _StatusHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path.startswith("/status"):
             try:
+                self.app.last_phone_poll = time.time()
+                self.app.phone_ip = self.client_address[0]
+            except Exception:
+                pass
+            try:
                 data = json.dumps(self.app.status_dict()).encode("utf-8")
             except Exception:
                 data = b"{}"
@@ -443,6 +448,9 @@ class DeepFocusApp:
         self.stop_ev = threading.Event()
         self.event_q = queue.Queue()
         self.block_overlay = None
+        self.last_phone_poll = 0.0    # kiedy telefon ostatnio pytal o stan
+        self.phone_ip = ""
+        self.pc_ip = local_ip()       # IP kompa do wpisania w telefonie
 
         f, s, b = self.db.get_day(today_key())
         self.focus_seconds, self.social_seconds, self.blocks = f, s, b
@@ -489,7 +497,7 @@ class DeepFocusApp:
             self.root.attributes("-alpha", 0.97)
         except Exception:
             pass
-        self.BW, self.BH = 340, 270           # bazowy rozmiar
+        self.BW, self.BH = 340, 300           # bazowy rozmiar
         self.W, self.H = self.BW, self.BH
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"{self.W}x{self.H}+{sw - self.W - 24}+30")
@@ -526,6 +534,10 @@ class DeepFocusApp:
         self.focus_lbl.grid(row=0, column=0, padx=10)
         self.social_lbl = tk.Label(stats, text="Sociale: 0 min", bg=CARD, fg=BREAK_C, font=self.f_stat)
         self.social_lbl.grid(row=0, column=1, padx=10)
+
+        self.phone_lbl = tk.Label(self.card, text="", bg=CARD, fg=SUB,
+                                  font=("Segoe UI", 9), justify="center")
+        self.phone_lbl.pack(pady=(6, 0))
 
         self.btns = tk.Frame(self.card, bg=CARD)
         self.btns.pack(pady=(10, 4))
@@ -791,7 +803,17 @@ class DeepFocusApp:
             if self.tick_count % 5 == 0:
                 self._persist()
         self._refresh_labels()
+        self._refresh_phone()
         self.root.after(1000, self.tick)
+
+    def _refresh_phone(self):
+        connected = (time.time() - self.last_phone_poll) < 15
+        if connected:
+            self.phone_lbl.config(
+                text=f"📱 Telefon: POŁĄCZONY  ●  ({self.phone_ip})", fg=WORK_C)
+        else:
+            self.phone_lbl.config(
+                text=f"📱 Telefon: brak  ○  wpisz w apce:  {self.pc_ip}:{LAN_PORT}", fg=SUB)
 
     def _handle_idle(self):
         idle = idle_seconds()
