@@ -395,6 +395,7 @@ class DeepFocusApp:
         f, s, b = self.db.get_day(today_key())
         self.focus_seconds, self.social_seconds, self.blocks = f, s, b
         self._restore_state()
+        self.state_date = today_key()   # dzien kalendarzowy, do ktorego nalezy stan w pamieci
 
         self._build_ui()
         self._build_tray()
@@ -693,7 +694,35 @@ class DeepFocusApp:
         self._notify("DZIEŃ ZAKOŃCZONY", "Generuję raport i wysyłam na Telegram…", SUB)
         self.ai_report("day", auto=True)
 
+    def _check_new_day(self):
+        """Wykrywa realnie nowy dzien kalendarzowy i pozwala zaczac go od nowa.
+        Wczorajsze dane sa juz zapisane w bazie pod swoja data."""
+        tk = today_key()
+        if tk == self.state_date:
+            return
+        log(f"NOWY DZIEN kalendarzowy: {tk} (poprzedni: {self.state_date})")
+        self.state_date = tk
+        # zeruj dzienne liczniki na nowy dzien
+        self.focus_seconds = 0
+        self.social_seconds = 0
+        self.blocks = 0
+        self.idle_seconds_today = 0
+        self.idle_active = False
+        self.db.add_event("new_day", reason="nowy dzien kalendarzowy")
+        if self.day_ended or not self.day_active:
+            # wczorajszy dzien zakonczony/niezaczety -> odblokuj nowy START
+            self.day_active = False
+            self.day_ended = False
+            self.paused = False
+            self.pending_gap = None
+            self.mode = MODE_WORK
+            self.remaining = self.cfg.work_min * 60
+            self._notify("NOWY DZIEŃ", "Możesz zacząć nowy dzień pracy — naciśnij START DNIA.", WORK_C)
+        self._persist()
+        self._render_state()
+
     def tick(self):
+        self._check_new_day()
         if self.counting():
             if self.mode == MODE_WORK:
                 self._handle_idle()
