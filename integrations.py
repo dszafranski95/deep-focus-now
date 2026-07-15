@@ -137,19 +137,23 @@ def fmt_hm(sec):
 def build_report(scope, stats):
     """stats: dict z danymi. Zwraca (tytul, tekst_raportu) - analiza z Mistrala."""
     system = (
-        "Jestes trenerem produktywnosci. Analizujesz dane pracy w pelnym skupieniu "
-        "(deep focus) uzytkownika. Piszesz po polsku, zwiezle, konkretnie i motywujaco, "
-        "bez lania wody. Zwracasz sam tekst raportu (bez markdown), gotowy do pokazania "
-        "w bloku monospace. Uzyj krotkich linii (max ~52 znaki), naglowkow wielkimi "
-        "literami i myslnikow. Na koncu daj PUENTE: czy pracowal duzo czy malo i jedna "
-        "rade na jutro."
+        "Jestes trenerem produktywnosci. Analizujesz dane pracy uzytkownika, ktory ma DWA "
+        "tryby pracy: 'PELNE PROGRAMOWANIE' (deep focus, social media zablokowane) oraz "
+        "'KLIENCI + KOD' (szuka klientow/pisze do firm i programuje naraz, social media wolne). "
+        "Piszesz po polsku, zwiezle, konkretnie i motywujaco, bez lania wody. Zwracasz sam "
+        "tekst raportu (bez markdown), gotowy do pokazania w bloku monospace. Uzyj krotkich "
+        "linii (max ~52 znaki), naglowkow wielkimi literami i myslnikow. Jesli jest recznie "
+        "napisana notatka uzytkownika (pole 'notatki_wlasne' / 'notatka'), POTRAKTUJ JA "
+        "PRIORYTETOWO - streszcz co zrobil, ile firm zrealizowal, i odnies sie do tego. "
+        "Na koncu daj PUENTE: czy pracowal duzo czy malo, jak podzielil czas miedzy tryby, "
+        "i jedna rade na jutro."
     )
     prompt = (
         f"Zakres raportu: {scope}.\n"
         f"Dane (JSON):\n{json.dumps(stats, ensure_ascii=False, indent=2)}\n\n"
-        "Napisz analize: ile realnie pracowal w skupieniu, jak wypada na tle poprzednich "
-        "dni/okresow, skomentuj przerwy i ich powody (czy uzasadnione), oceń dyscypline. "
-        "Dodaj porownanie liczbowe. Zakoncz sekcja PUENTA."
+        "Napisz analize: ile realnie pracowal (rozbij na PELNE PROGRAMOWANIE vs KLIENCI+KOD), "
+        "podsumuj jego wlasna notatke (co zrobil, ile firm), jak wypada na tle poprzednich "
+        "dni/okresow, skomentuj przerwy i ich powody, ocen dyscypline. Zakoncz sekcja PUENTA."
     )
     model = ENV.get("MISTRAL_MODEL_SMART", "mistral-small-latest")
     text = mistral_chat(prompt, system=system, model=model, max_tokens=900)

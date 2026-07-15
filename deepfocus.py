@@ -73,6 +73,12 @@ ADDRESS_BAR_NAMES = [
 MODE_WORK = "WORK"
 MODE_BREAK = "BREAK"
 
+# tryby pracy (przelaczane w locie, nie zatrzymuja licznika)
+PROFILE_DEEP = "DEEP"     # pelne programowanie - social media OFF
+PROFILE_MIXED = "MIXED"   # klienci + kod - social media WOLNE
+PROFILE_LABELS = {PROFILE_DEEP: "PEŁNE PROGRAMOWANIE", PROFILE_MIXED: "KLIENCI + KOD"}
+PROFILE_COLORS = {PROFILE_DEEP: "#5ad1a0", PROFILE_MIXED: "#6db6ff"}
+
 
 def log(msg):
     try:
@@ -120,6 +126,17 @@ class DB:
             date TEXT PRIMARY KEY, day_active INTEGER, paused INTEGER,
             day_ended INTEGER, mode TEXT, remaining INTEGER,
             day_start TEXT, last_update REAL)""")
+        # migracje - nowe kolumny (czas per tryb + notatka + profil)
+        for tbl, col, typ in [
+            ("days", "deep_seconds", "INTEGER DEFAULT 0"),
+            ("days", "mixed_seconds", "INTEGER DEFAULT 0"),
+            ("days", "note", "TEXT"),
+            ("state", "work_profile", "TEXT"),
+        ]:
+            try:
+                self._exec(f"ALTER TABLE {tbl} ADD COLUMN {col} {typ}")
+            except Exception:
+                pass
 
     def _exec(self, sql, params=(), fetch=None):
         conn = sqlite3.connect(self.path, timeout=5)
@@ -134,21 +151,33 @@ class DB:
             conn.close()
 
     def get_day(self, date):
-        r = self._exec("SELECT focus_seconds,social_seconds,blocks FROM days WHERE date=?",
-                       (date,), fetch="one")
-        return r or (0, 0, 0)
+        r = self._exec("""SELECT focus_seconds,social_seconds,blocks,
+                          COALESCE(deep_seconds,0),COALESCE(mixed_seconds,0)
+                          FROM days WHERE date=?""", (date,), fetch="one")
+        return r or (0, 0, 0, 0, 0)
 
-    def upsert_day(self, date, focus, social, blocks, started):
+    def upsert_day(self, date, focus, social, blocks, started, deep=0, mixed=0):
         now = datetime.datetime.now().strftime("%H:%M:%S")
-        self._exec("""INSERT INTO days(date,focus_seconds,social_seconds,blocks,day_started,last_update)
-                      VALUES(?,?,?,?,?,?)
+        self._exec("""INSERT INTO days(date,focus_seconds,social_seconds,blocks,day_started,
+                        last_update,deep_seconds,mixed_seconds)
+                      VALUES(?,?,?,?,?,?,?,?)
                       ON CONFLICT(date) DO UPDATE SET focus_seconds=excluded.focus_seconds,
                         social_seconds=excluded.social_seconds, blocks=excluded.blocks,
-                        last_update=excluded.last_update""",
-                   (date, focus, social, blocks, started, now))
+                        last_update=excluded.last_update, deep_seconds=excluded.deep_seconds,
+                        mixed_seconds=excluded.mixed_seconds""",
+                   (date, focus, social, blocks, started, now, deep, mixed))
+
+    def set_note(self, date, note):
+        self._exec("""INSERT INTO days(date,note) VALUES(?,?)
+                      ON CONFLICT(date) DO UPDATE SET note=excluded.note""", (date, note))
+
+    def get_note(self, date):
+        r = self._exec("SELECT note FROM days WHERE date=?", (date,), fetch="one")
+        return (r[0] if r and r[0] else "")
 
     def range_days(self, start, end):
-        return self._exec("""SELECT date,focus_seconds,social_seconds,blocks FROM days
+        return self._exec("""SELECT date,focus_seconds,social_seconds,blocks,
+                             COALESCE(deep_seconds,0),COALESCE(mixed_seconds,0),note FROM days
                              WHERE date>=? AND date<=? ORDER BY date""",
                           (start.isoformat(), end.isoformat()), fetch="all")
 
@@ -163,22 +192,24 @@ class DB:
                           (start.isoformat(), end.isoformat()), fetch="all")
 
     def save_state(self, s):
-        self._exec("""INSERT INTO state(date,day_active,paused,day_ended,mode,remaining,day_start,last_update)
-                      VALUES(?,?,?,?,?,?,?,?)
+        self._exec("""INSERT INTO state(date,day_active,paused,day_ended,mode,remaining,
+                        day_start,last_update,work_profile)
+                      VALUES(?,?,?,?,?,?,?,?,?)
                       ON CONFLICT(date) DO UPDATE SET day_active=excluded.day_active,
                         paused=excluded.paused, day_ended=excluded.day_ended, mode=excluded.mode,
                         remaining=excluded.remaining, day_start=excluded.day_start,
-                        last_update=excluded.last_update""",
+                        last_update=excluded.last_update, work_profile=excluded.work_profile""",
                    (s["date"], s["day_active"], s["paused"], s["day_ended"], s["mode"],
-                    s["remaining"], s["day_start"], s["last_update"]))
+                    s["remaining"], s["day_start"], s["last_update"], s.get("work_profile", "DEEP")))
 
     def load_state(self, date):
-        r = self._exec("""SELECT day_active,paused,day_ended,mode,remaining,day_start,last_update
-                          FROM state WHERE date=?""", (date,), fetch="one")
+        r = self._exec("""SELECT day_active,paused,day_ended,mode,remaining,day_start,last_update,
+                          COALESCE(work_profile,'DEEP') FROM state WHERE date=?""",
+                       (date,), fetch="one")
         if not r:
             return None
         return {"day_active": r[0], "paused": r[1], "day_ended": r[2], "mode": r[3],
-                "remaining": r[4], "day_start": r[5], "last_update": r[6]}
+                "remaining": r[4], "day_start": r[5], "last_update": r[6], "work_profile": r[7]}
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +365,9 @@ def monitor_loop(app):
         killed_notified = {}
         while not app.stop_ev.is_set():
             try:
-                if app.mode == MODE_WORK and app.counting():
+                # blokada tylko w trybie PELNE PROGRAMOWANIE (DEEP)
+                if (app.mode == MODE_WORK and app.counting()
+                        and app.work_profile == PROFILE_DEEP):
                     now = time.time()
                     # 1) zabij zablokowane aplikacje (Telegram, WhatsApp, Discord...)
                     if now - last_scan >= KILL_SCAN_EVERY:
@@ -380,9 +413,12 @@ class DeepFocusApp:
         self.day_ended = False
         self.day_start = None
         self.pending_gap = None      # (from_ts, to_ts) do uzasadnienia
+        self.work_profile = PROFILE_DEEP   # domyslnie pelne programowanie
         self.focus_seconds = 0
         self.social_seconds = 0
         self.blocks = 0
+        self.deep_seconds = 0
+        self.mixed_seconds = 0
         self.idle_seconds_today = 0
         self.idle_active = False
         self.idle_start = None
@@ -392,8 +428,9 @@ class DeepFocusApp:
         self.event_q = queue.Queue()
         self.block_overlay = None
 
-        f, s, b = self.db.get_day(today_key())
+        f, s, b, dp, mx = self.db.get_day(today_key())
         self.focus_seconds, self.social_seconds, self.blocks = f, s, b
+        self.deep_seconds, self.mixed_seconds = dp, mx
         self._restore_state()
         self.state_date = today_key()   # dzien kalendarzowy, do ktorego nalezy stan w pamieci
 
@@ -412,6 +449,7 @@ class DeepFocusApp:
             return
         self.mode = st["mode"] or MODE_WORK
         self.remaining = int(st["remaining"] or self.cfg.work_min * 60)
+        self.work_profile = st.get("work_profile") or PROFILE_DEEP
         self.day_start = st["day_start"]
         self.day_ended = bool(st["day_ended"])
         if st["day_active"] and not self.day_ended:
@@ -437,7 +475,7 @@ class DeepFocusApp:
             self.root.attributes("-alpha", 0.97)
         except Exception:
             pass
-        self.BW, self.BH = 340, 270           # bazowy rozmiar
+        self.BW, self.BH = 340, 330           # bazowy rozmiar
         self.W, self.H = self.BW, self.BH
         sw = self.root.winfo_screenwidth()
         self.root.geometry(f"{self.W}x{self.H}+{sw - self.W - 24}+30")
@@ -474,6 +512,22 @@ class DeepFocusApp:
         self.focus_lbl.grid(row=0, column=0, padx=10)
         self.social_lbl = tk.Label(stats, text="Sociale: 0 min", bg=CARD, fg=BREAK_C, font=self.f_stat)
         self.social_lbl.grid(row=0, column=1, padx=10)
+
+        # przelacznik trybu pracy (klik = zmiana, licznik leci dalej)
+        self.profile_btn = tk.Button(self.card, text="", command=self.toggle_profile,
+                                     bg="#1b2430", fg=TXT, relief="flat",
+                                     font=("Segoe UI", 10, "bold"), padx=10, pady=4,
+                                     activebackground="#26313d", cursor="hand2")
+        self.profile_btn.pack(pady=(8, 2))
+
+        stats2 = tk.Frame(self.card, bg=CARD)
+        stats2.pack()
+        self.deep_lbl = tk.Label(stats2, text="Kod: 0", bg=CARD, fg=PROFILE_COLORS[PROFILE_DEEP],
+                                 font=("Segoe UI", 9))
+        self.deep_lbl.grid(row=0, column=0, padx=8)
+        self.mixed_lbl = tk.Label(stats2, text="Klienci+kod: 0", bg=CARD,
+                                  fg=PROFILE_COLORS[PROFILE_MIXED], font=("Segoe UI", 9))
+        self.mixed_lbl.grid(row=0, column=1, padx=8)
 
         self.btns = tk.Frame(self.card, bg=CARD)
         self.btns.pack(pady=(10, 4))
@@ -566,10 +620,26 @@ class DeepFocusApp:
             self.card.config(highlightbackground=self._accent(), highlightcolor=self._accent())
         self._refresh_labels()
 
+    def toggle_profile(self):
+        self.work_profile = PROFILE_MIXED if self.work_profile == PROFILE_DEEP else PROFILE_DEEP
+        self.db.add_event("profile", reason=PROFILE_LABELS[self.work_profile])
+        log(f"TRYB -> {self.work_profile}")
+        blocked = "sociale OFF" if self.work_profile == PROFILE_DEEP else "sociale WOLNE"
+        self._notify(f"TRYB: {PROFILE_LABELS[self.work_profile]}", blocked,
+                     PROFILE_COLORS[self.work_profile])
+        self._render_state()
+        self._persist()
+
     def _refresh_labels(self):
         self.time_lbl.config(text=fmt_clock(self.remaining))
         self.focus_lbl.config(text=f"Praca: {fmt_hms(self.focus_seconds)}")
         self.social_lbl.config(text=f"Sociale: {fmt_hms(self.social_seconds)}")
+        pc = PROFILE_COLORS[self.work_profile]
+        arrow = "🔒" if self.work_profile == PROFILE_DEEP else "🔓"
+        self.profile_btn.config(
+            text=f"{arrow} TRYB: {PROFILE_LABELS[self.work_profile]}  (klik = zmień)", fg=pc)
+        self.deep_lbl.config(text=f"Kod: {fmt_hms(self.deep_seconds)}")
+        self.mixed_lbl.config(text=f"Klienci+kod: {fmt_hms(self.mixed_seconds)}")
         total = (self.cfg.work_min if self.mode == MODE_WORK else self.cfg.break_min) * 60
         frac = 1 - (self.remaining / total) if total else 0
         self.bar_canvas.delete("all")
@@ -587,6 +657,8 @@ class DeepFocusApp:
         menu = pystray.Menu(
             pystray.MenuItem("Pokaż okno", lambda: self.root.after(0, self.show_window), default=True),
             pystray.MenuItem("Start dnia", lambda: self.root.after(0, self.start_day)),
+            pystray.MenuItem("Zmien tryb (kod / klienci+kod)",
+                             lambda: self.root.after(0, self.toggle_profile)),
             pystray.MenuItem("Pauza", lambda: self.root.after(0, self.pause_day)),
             pystray.MenuItem("Ponów", lambda: self.root.after(0, self.resume_day)),
             pystray.MenuItem("Zakończ dzień", lambda: self.root.after(0, self.stop_day)),
@@ -630,6 +702,45 @@ class DeepFocusApp:
         ent.bind("<Return>", ok)
         tk.Button(win, text="Zatwierdź", command=ok, bg=WORK_C, fg="#08130d", relief="flat",
                   font=("Segoe UI", 10, "bold"), padx=14, pady=5, cursor="hand2").pack()
+        win.grab_set()
+        self.root.wait_window(win)
+        return result["val"]
+
+    def ask_note(self):
+        """Wielolinijkowa notatka konca dnia (co zrobiles, ile firm itd.). Zwraca tekst lub ''."""
+        win = tk.Toplevel(self.root)
+        win.title("Notatka dnia")
+        win.configure(bg=BG)
+        win.attributes("-topmost", True)
+        ww, wh = 520, 360
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        win.geometry(f"{ww}x{wh}+{(sw-ww)//2}+{(sh-wh)//2}")
+        tk.Label(win, text="Co dziś zrobiłeś?", bg=BG, fg=WORK_C,
+                 font=("Segoe UI", 15, "bold")).pack(pady=(16, 2))
+        tk.Label(win, text="Ile firm zrealizowałeś, co zaprogramowałeś, co się udało itd.\n"
+                           "To trafi do raportu, który podsumuje Mistral.",
+                 bg=BG, fg=SUB, font=("Segoe UI", 10), justify="center").pack()
+        txt = tk.Text(win, bg=CARD, fg=TXT, insertbackground=TXT, relief="flat",
+                      font=("Segoe UI", 11), wrap="word", height=8)
+        txt.pack(fill="both", expand=True, padx=16, pady=12)
+        # wczytaj wczesniejsza notatke jesli byla
+        prev = self.db.get_note(today_key())
+        if prev:
+            txt.insert("1.0", prev)
+        txt.focus_set()
+        result = {"val": ""}
+
+        def save():
+            result["val"] = txt.get("1.0", "end").strip()
+            win.destroy()
+
+        row = tk.Frame(win, bg=BG); row.pack(pady=(0, 12))
+        tk.Button(row, text="Zapisz i podsumuj", command=save, bg=WORK_C, fg="#08130d",
+                  relief="flat", font=("Segoe UI", 11, "bold"), padx=16, pady=6,
+                  cursor="hand2").pack(side="left", padx=6)
+        tk.Button(row, text="Pomiń", command=win.destroy, bg="#26313d", fg="#cfe3f2",
+                  relief="flat", font=("Segoe UI", 10), padx=12, pady=6,
+                  cursor="hand2").pack(side="left", padx=6)
         win.grab_set()
         self.root.wait_window(win)
         return result["val"]
@@ -691,6 +802,11 @@ class DeepFocusApp:
         self._persist()
         log(f"ZAKOŃCZ dnia — praca {fmt_hms(self.focus_seconds)}, bloki {self.blocks}")
         self._render_state()
+        # recznie napisana notatka dnia -> do raportu
+        note = self.ask_note()
+        if note:
+            self.db.set_note(today_key(), note)
+            log("Notatka dnia zapisana")
         self._notify("DZIEŃ ZAKOŃCZONY", "Generuję raport i wysyłam na Telegram…", SUB)
         self.ai_report("day", auto=True)
 
@@ -728,6 +844,10 @@ class DeepFocusApp:
                 self._handle_idle()
                 if not self.idle_active:
                     self.focus_seconds += 1   # liczymy tylko realna prace (nie bezczynnosc)
+                    if self.work_profile == PROFILE_DEEP:
+                        self.deep_seconds += 1
+                    else:
+                        self.mixed_seconds += 1
                 else:
                     self.idle_seconds_today += 1
             else:
@@ -845,11 +965,12 @@ class DeepFocusApp:
     def _persist(self):
         started = self.day_start.split("T")[1] if self.day_start and "T" in self.day_start else ""
         self.db.upsert_day(today_key(), int(self.focus_seconds), int(self.social_seconds),
-                           int(self.blocks), started)
+                           int(self.blocks), started, int(self.deep_seconds), int(self.mixed_seconds))
         self.db.save_state({
             "date": today_key(), "day_active": int(self.day_active), "paused": int(self.paused),
             "day_ended": int(self.day_ended), "mode": self.mode, "remaining": int(self.remaining),
             "day_start": self.day_start or "", "last_update": time.time(),
+            "work_profile": self.work_profile,
         })
         if self.tick_count % 30 == 0 or self.day_ended:
             self.export_json()
@@ -861,7 +982,8 @@ class DeepFocusApp:
             year_start = today.replace(month=1, day=1)
             rows = self.db.range_days(year_start, today)
             days = {r[0]: {"praca_s": r[1], "sociale_s": r[2], "bloki": r[3],
-                           "praca": fmt_hms(r[1])} for r in rows}
+                           "pelne_programowanie_s": r[4], "klienci_kod_s": r[5],
+                           "notatka": (r[6] or ""), "praca": fmt_hms(r[1])} for r in rows}
 
             def total(start):
                 return sum(r[1] for r in rows if r[0] >= start.isoformat())
@@ -870,6 +992,8 @@ class DeepFocusApp:
                 "aktualizacja": datetime.datetime.now().isoformat(timespec="seconds"),
                 "dzis": {"data": today.isoformat(), "praca_s": int(self.focus_seconds),
                          "sociale_s": int(self.social_seconds), "bezczynnosc_s": int(self.idle_seconds_today),
+                         "pelne_programowanie_s": int(self.deep_seconds),
+                         "klienci_kod_s": int(self.mixed_seconds),
                          "bloki": int(self.blocks), "praca": fmt_hms(self.focus_seconds)},
                 "sumy": {"tydzien": fmt_hms(total(wk)),
                          "miesiac": fmt_hms(total(today.replace(day=1))),
@@ -896,11 +1020,15 @@ class DeepFocusApp:
         pauzy = [{"godzina": e[0][11:16], "typ": e[2], "powod": e[3],
                   "ile": fmt_hms(e[4]) if e[4] else ""}
                  for e in evs if e[2] in ("pause", "gap")]
-        per_day = [{"data": d[0], "praca": fmt_hms(d[1]), "sociale": fmt_hms(d[2]), "bloki": d[3]}
-                   for d in days]
+        per_day = [{"data": d[0], "praca": fmt_hms(d[1]),
+                    "pelne_programowanie": fmt_hms(d[4]), "klienci_kod": fmt_hms(d[5]),
+                    "bloki": d[3], "notatka": (d[6] or "")} for d in days]
         tot_f = sum(d[1] for d in days)
         tot_s = sum(d[2] for d in days)
         tot_b = sum(d[3] for d in days)
+        tot_deep = sum(d[4] for d in days)
+        tot_mixed = sum(d[5] for d in days)
+        notatki = [{"data": d[0], "notatka": d[6]} for d in days if d[6]]
         # poprzedni okres dla porownania (dla dnia: 7 dni wstecz)
         prev_start = start - (today - start) - datetime.timedelta(days=1)
         if scope == "day":
@@ -911,9 +1039,12 @@ class DeepFocusApp:
             "zakres": scope,
             "okres": f"{start.isoformat()}..{today.isoformat()}",
             "suma_praca": fmt_hms(tot_f), "suma_sociale": fmt_hms(tot_s),
+            "czas_pelne_programowanie": fmt_hms(tot_deep),
+            "czas_klienci_kod": fmt_hms(tot_mixed),
             "ukonczone_bloki": tot_b,
-            "bezczynnosc_dzis": fmt_hms(self.idle_seconds_today),
+            "bezczynnosc": fmt_hms(self.idle_seconds_today),
             "liczba_wykrytych_bezczynnosci": len(idle_evs),
+            "notatki_wlasne": notatki,
             "dni": per_day,
             "przerwy_z_powodami": pauzy,
             "poprzedni_okres": [{"data": d[0], "praca": fmt_hms(d[1])} for d in prev],
